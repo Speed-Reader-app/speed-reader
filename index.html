@@ -5,47 +5,72 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Speed Reader</title>
     
-    <!-- iPhone Full Screen App Tags -->
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="Speed Reader">
     <link rel="apple-touch-icon" href="https://upload.wikimedia.org/wikipedia/commons/thumb/e/e0/Check_green_icon.svg/192px-Check_green_icon.svg.png">
 
-    <!-- Libraries for reading PDFs and unzipping EPUBs -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 
     <style>
         body { font-family: system-ui, -apple-system, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; background-color: #f4f4f5; }
-        .reader-container { background: white; padding: 40px; border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.05); width: 100%; max-width: 500px; text-align: center; }
-        .word-display { font-family: 'Courier New', Courier, monospace; font-size: 42px; font-weight: bold; display: flex; justify-content: center; margin: 40px 0; padding: 20px 0; border-top: 2px solid #e4e4e7; border-bottom: 2px solid #e4e4e7; }
-        .prefix { width: 150px; text-align: right; }
-        .orp { color: #ef4444; }
-        .suffix { width: 150px; text-align: left; }
+        .reader-container { background: white; padding: 30px 20px; border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.05); width: 90%; max-width: 500px; text-align: center; box-sizing: border-box; }
+        
+        /* Fixed mobile overlap using absolute centering */
+        .word-display { 
+            font-family: 'Courier New', Courier, monospace; 
+            font-size: 36px; 
+            font-weight: bold; 
+            position: relative;
+            height: 60px;
+            margin: 40px 0; 
+            border-top: 2px solid #e4e4e7; 
+            border-bottom: 2px solid #e4e4e7; 
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
+        
+        /* Forces the center ORP letter to lock dead-center */
+        .orp-container {
+            position: absolute;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+        }
+        .prefix { text-align: right; white-space: pre; }
+        .orp { color: #ef4444; white-space: pre; }
+        .suffix { text-align: left; white-space: pre; }
+
         .controls { display: flex; flex-direction: column; gap: 20px; }
         .buttons { display: flex; justify-content: center; gap: 15px; }
         button { padding: 12px 24px; font-size: 16px; font-weight: bold; cursor: pointer; border: none; border-radius: 8px; background-color: #3b82f6; color: white; transition: 0.2s; }
         button:hover { background-color: #2563eb; }
         button:disabled { background-color: #9ca3af; cursor: not-allowed; }
         .wpm-label { font-weight: bold; font-size: 18px; margin-top: 10px; }
-        .file-upload { margin-bottom: 20px; padding: 10px; border: 2px dashed #d4d4d8; border-radius: 8px; }
+        .file-upload { margin-bottom: 20px; padding: 10px; border: 2px dashed #d4d4d8; border-radius: 8px; font-size: 14px; }
+        input[type="range"] { width: 100%; }
     </style>
 </head>
 <body>
 
     <div class="reader-container">
-        <!-- Notice the accept attribute now includes .epub -->
         <div class="file-upload">
-            <label for="fileInput"><strong>Upload Book/File: </strong></label>
+            <label for="fileInput"><strong>Upload Book/File: </strong></label><br><br>
             <input type="file" id="fileInput" accept=".txt, .pdf, .epub">
         </div>
 
         <div id="progress" style="color: gray; font-size: 14px;">Word 0 of 0</div>
 
+        <!-- Updated layout structure -->
         <div class="word-display" id="wordDisplay">
-            <div class="prefix" id="prefix">Load</div>
-            <div class="orp" id="orp">a</div>
-            <div class="suffix" id="suffix">file</div>
+            <div class="orp-container">
+                <div class="prefix" id="prefix">Load</div>
+                <div class="orp" id="orp">a</div>
+                <div class="suffix" id="suffix">file</div>
+            </div>
         </div>
 
         <div class="controls">
@@ -77,29 +102,24 @@
         const playPauseBtn = document.getElementById("playPauseBtn");
         const progressEl = document.getElementById("progress");
 
-        // --- EPUB EXTRACTION LOGIC ---
         async function extractEpubText(file) {
             const zip = await JSZip.loadAsync(file);
             const parser = new DOMParser();
             
-            // 1. Find where the book's index (OPF file) is located
             const containerXml = await zip.file("META-INF/container.xml").async("string");
             const containerDoc = parser.parseFromString(containerXml, "text/xml");
             const opfPath = containerDoc.getElementsByTagName("rootfile")[0].getAttribute("full-path");
             const opfDir = opfPath.includes("/") ? opfPath.substring(0, opfPath.lastIndexOf("/") + 1) : "";
             
-            // 2. Read the OPF file
             const opfXml = await zip.file(opfPath).async("string");
             const opfDoc = parser.parseFromString(opfXml, "text/xml");
             
-            // 3. Map all the files in the book
             const manifestItems = opfDoc.getElementsByTagName("item");
             const manifest = {};
             for (let i = 0; i < manifestItems.length; i++) {
                 manifest[manifestItems[i].getAttribute("id")] = manifestItems[i].getAttribute("href");
             }
             
-            // 4. Read the chapters in the correct order (the spine)
             const spineItems = opfDoc.getElementsByTagName("itemref");
             let fullText = "";
             
@@ -111,7 +131,6 @@
                     const fileInZip = zip.file(decodeURIComponent(filePath));
                     if (fileInZip) {
                         const html = await fileInZip.async("string");
-                        // Strip out all the HTML tags and just get the readable text
                         const htmlDoc = parser.parseFromString(html, "text/html");
                         fullText += htmlDoc.body.textContent + " ";
                     }
@@ -154,7 +173,7 @@
 
                         finalizeLoad(fullText);
                     } catch (error) {
-                        progressEl.innerText = "Error reading PDF. It might be scanned/images only.";
+                        progressEl.innerText = "Error reading PDF.";
                         console.error(error);
                     }
                 };
