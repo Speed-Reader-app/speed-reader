@@ -4,16 +4,17 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Speed Reader</title>
-    <!-- Makes the app run in full-screen mode without the Safari URL bar -->
+    
+    <!-- iPhone Full Screen App Tags -->
     <meta name="apple-mobile-web-app-capable" content="yes">
-    <!-- Changes the top battery/time bar to match your app -->
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <!-- Sets the name that appears under the icon on the home screen -->
     <meta name="apple-mobile-web-app-title" content="Speed Reader">
-    <!-- Optional: Sets the app icon. Replace the URL with a link to your own square image -->
     <link rel="apple-touch-icon" href="https://upload.wikimedia.org/wikipedia/commons/thumb/e/e0/Check_green_icon.svg/192px-Check_green_icon.svg.png">
-    <!-- Import PDF.js -->
+
+    <!-- Libraries for reading PDFs and unzipping EPUBs -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
     <style>
         body { font-family: system-ui, -apple-system, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; background-color: #f4f4f5; }
         .reader-container { background: white; padding: 40px; border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.05); width: 100%; max-width: 500px; text-align: center; }
@@ -33,9 +34,10 @@
 <body>
 
     <div class="reader-container">
+        <!-- Notice the accept attribute now includes .epub -->
         <div class="file-upload">
-            <label for="fileInput"><strong>Upload TXT or PDF: </strong></label>
-            <input type="file" id="fileInput" accept=".txt, .pdf">
+            <label for="fileInput"><strong>Upload Book/File: </strong></label>
+            <input type="file" id="fileInput" accept=".txt, .pdf, .epub">
         </div>
 
         <div id="progress" style="color: gray; font-size: 14px;">Word 0 of 0</div>
@@ -58,7 +60,6 @@
     </div>
 
     <script>
-        // Set up the PDF.js Web Worker
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
         let words = [];
@@ -66,7 +67,7 @@
         let isPlaying = false;
         let wpm = 300;
         let playTimeout = null;
-        let currentFileName = ""; // Tracks the file name for saving progress
+        let currentFileName = ""; 
 
         const prefixEl = document.getElementById("prefix");
         const orpEl = document.getElementById("orp");
@@ -76,17 +77,67 @@
         const playPauseBtn = document.getElementById("playPauseBtn");
         const progressEl = document.getElementById("progress");
 
+        // --- EPUB EXTRACTION LOGIC ---
+        async function extractEpubText(file) {
+            const zip = await JSZip.loadAsync(file);
+            const parser = new DOMParser();
+            
+            // 1. Find where the book's index (OPF file) is located
+            const containerXml = await zip.file("META-INF/container.xml").async("string");
+            const containerDoc = parser.parseFromString(containerXml, "text/xml");
+            const opfPath = containerDoc.getElementsByTagName("rootfile")[0].getAttribute("full-path");
+            const opfDir = opfPath.includes("/") ? opfPath.substring(0, opfPath.lastIndexOf("/") + 1) : "";
+            
+            // 2. Read the OPF file
+            const opfXml = await zip.file(opfPath).async("string");
+            const opfDoc = parser.parseFromString(opfXml, "text/xml");
+            
+            // 3. Map all the files in the book
+            const manifestItems = opfDoc.getElementsByTagName("item");
+            const manifest = {};
+            for (let i = 0; i < manifestItems.length; i++) {
+                manifest[manifestItems[i].getAttribute("id")] = manifestItems[i].getAttribute("href");
+            }
+            
+            // 4. Read the chapters in the correct order (the spine)
+            const spineItems = opfDoc.getElementsByTagName("itemref");
+            let fullText = "";
+            
+            for (let i = 0; i < spineItems.length; i++) {
+                const idref = spineItems[i].getAttribute("idref");
+                const href = manifest[idref];
+                if (href) {
+                    const filePath = opfDir + href;
+                    const fileInZip = zip.file(decodeURIComponent(filePath));
+                    if (fileInZip) {
+                        const html = await fileInZip.async("string");
+                        // Strip out all the HTML tags and just get the readable text
+                        const htmlDoc = parser.parseFromString(html, "text/html");
+                        fullText += htmlDoc.body.textContent + " ";
+                    }
+                }
+            }
+            return fullText;
+        }
+
         document.getElementById("fileInput").addEventListener("change", async function(event) {
             const file = event.target.files[0];
             if (!file) return;
 
             currentFileName = file.name;
-
             progressEl.innerText = "Extracting text... Please wait.";
             playPauseBtn.disabled = true;
             if (isPlaying) togglePlayback();
 
-            if (file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")) {
+            if (file.name.toLowerCase().endsWith(".epub")) {
+                try {
+                    const text = await extractEpubText(file);
+                    finalizeLoad(text);
+                } catch (error) {
+                    progressEl.innerText = "Error reading EPUB file.";
+                    console.error(error);
+                }
+            } else if (file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")) {
                 const reader = new FileReader();
                 reader.onload = async function(e) {
                     try {
@@ -121,7 +172,6 @@
         function finalizeLoad(text) {
             words = text.trim().split(/\s+/).filter(w => w.length > 0);
             
-            // Check for saved progress in localStorage
             const savedIndex = localStorage.getItem(currentFileName);
             if (savedIndex !== null && !isNaN(savedIndex)) {
                 currentIndex = parseInt(savedIndex);
@@ -175,7 +225,7 @@
                 runEngine();
             } else {
                 clearTimeout(playTimeout);
-                saveProgress(); // Save progress when manually paused
+                saveProgress();
             }
         }
 
@@ -201,7 +251,7 @@
         }
 
         function rewindSentence() {
-            if (isPlaying) togglePlayback(); // Pauses and automatically saves progress
+            if (isPlaying) togglePlayback(); 
             if (currentIndex === 0) return;
 
             let searchIndex = Math.max(0, currentIndex - 2);
@@ -219,14 +269,12 @@
             saveProgress();
         }
 
-        // --- PROGRESS SAVING ---
         function saveProgress() {
             if (currentFileName && words.length > 0) {
                 localStorage.setItem(currentFileName, currentIndex);
             }
         }
 
-        // Automatically save when the user closes or refreshes the browser tab
         window.addEventListener("beforeunload", saveProgress);
     </script>
 </body>
